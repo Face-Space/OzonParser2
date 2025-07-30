@@ -8,7 +8,7 @@ def setup_logging(log_level="INFO", log_dir=None):
 
     if log_dir is None:
         log_dir = Path(__file__).parent.parent.parent / "logs"
-        # Создаётся объект Path, представляющий путь к текущему файлу
+        # Создаётся объект Path, представляющий путь к текущему файлу с помощью __file__
         # Атрибут .parent у объекта Path возвращает путь к родительской папке данного файла или папки
         # "logs" — это имя папки, которую мы хотим добавить
 
@@ -33,6 +33,7 @@ def setup_logging(log_level="INFO", log_dir=None):
 
     # Метод setLevel() задаёт минимальный уровень важности сообщений, которые будут обрабатываться логгером
     # getattr(logging, 'INFO') возвращает значение константы из модуля logging, соответствующее уровню
+    # Например, logging.INFO или logging.DEBUG
 
     root_logger.handlers.clear()
 
@@ -45,6 +46,8 @@ def setup_logging(log_level="INFO", log_dir=None):
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
+    # logging.StreamHandler() — это класс из стандартного модуля logging, предназначенный для отправки логов в потоки
+    # ввода-вывода т.е. в консоль
     # Метод .addHandler(handler) добавляет этот обработчик к логгеру, чтобы он начал получать и обрабатывать все сообщения,
     # которые логгер будет выдавать
 
@@ -66,8 +69,20 @@ def setup_logging(log_level="INFO", log_dir=None):
     root_logger.addHandler(file_handler)
 
 
+    error_file = log_dir / f"errors_{datetime.now().strftime('%Y%m%d')}.log"
+    error_handler = logging.handlers.RotatingFileHandler(
+        error_file,
+        maxBytes=5*1024*1024,  # 5MB
+        backupCount=3,
+        encoding="utf-8"
+    )
+    error_handler.setLevel(logging.ERROR)
+    error_handler.setFormatter(formatter)
+    root_logger.addHandler(error_handler)
 
 
+    logging.info("Логирование настроено успешно")
 
-
-
+    # эта строка выполняется, если уровень логирования установлен на INFO или ниже (например, DEBUG),
+    # то сообщение "Логирование настроено успешно" будет добавлено в лог — это может быть консоль, файл или
+    # другой обработчик, настроенный в логгере
