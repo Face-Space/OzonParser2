@@ -2,11 +2,26 @@
 Главный файл приложения Ozon Parser - запуск GUI
 Запуск: python main.py
 """
+import sys
 import logging
+from pathlib import Path
 
+# Добавляем корневую директорию в путь
+sys.path.insert(0, str(Path(__file__).parent))
+# В Python sys.path — это список строк, где каждая строка — путь к каталогу, в котором
+# интерпретатор ищет модули для импорта
+# sys.path.insert(0, ...) — добавляет этот путь в начало списка путей поиска модулей
+
+# Эта строчка гарантирует, что директория, где расположен текущий файл, будет первой
+# в списке путей поиска модулей Python
+
+
+from src.core.app_manager import AppManager
+from src.gui.main_window import MainWindow
 from src.utils.logger import setup_logging
 from src.config.settings import Settings
 
+# повтори logger.py через 2 дня
 
 def main():
     # Запуск GUI для управления телеграмм ботом
@@ -23,6 +38,14 @@ def main():
 
         # загрузка настроек
         settings = Settings()
+
+        # создание менеджера приложения
+        app_manager = AppManager(settings)
+
+        # Создание и запуск GUI
+        gui = MainWindow(app_manager)
+        gui.run()
+
 
     except Exception as e:
         print(f"❌Ошибка запуска GUI❌: {e}")
