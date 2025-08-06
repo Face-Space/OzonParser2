@@ -33,5 +33,59 @@ class AppManager:
     def start_parsing(self, category_url: str, selected_fields: list = None, user_id: str = None) -> bool:
         with self.parsing_lock:
             # Проверяем, не парсит ли уже этот пользователь
+            if user_id and user_id in self.active_parsing_users:
+                logger.warning(f"Пользователь {user_id} уже запустил парсинг")
+                return False
 
+        # Добавляем пользователя в активные
+        if user_id:
+            self.active_parsing_users.add(user_id)
+
+        # Устанавливаем глобальный флаг для первого пользователя
+        if not self.is_running:
+            self.stop_event.clear()
+            self.is_running = True
+
+        try:
+            # запускаем парсинг в отдельном потоке
+            parsing_thread = threading.Thread(
+                target=self._parsing_task_wrapper,
+                args=(category_url, selected_fields, user_id),
+                daemon=True
+            )
+            parsing_thread.start()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка запуска парсинга для пользователя {user_id}: {e}")
+            # Убираем пользователя из активных при ошибке
+            with self.parsing_lock:
+                if user_id and user_id in self.active_parsing_users:
+                    self.active_parsing_users.remove(user_id)
+                # Если это был последний пользователь, сбрасываем глобальный флаг
+                if not self.active_parsing_users:
+                    self.is_running = False
+            return False
+
+    # _ - это функция предназначена для внутреннего использования и не должна использоваться
+    # напрямую за пределами данного класса или модуля
+    def _parsing_task_wrapper(self, category_url: str, selected_fields: list = None, user_id: str = None):
+        '''Wrapper для парсинга с правильной очисткой ресурсов'''
+        try:
+            self._parsing_task(category_url, selected_fields, user_id)
+        except Exception as e:
+            logger.error(f"Ошибка в парсинге для пользователя {user_id}: {e}")
+        finally:
+            # Убираем пользователя из активных
+            with self.parsing_lock:
+                if user_id and user_id in self.active_parsing_users:
+                    self.active_parsing_users.remove(user_id)
+                    logger.info(f"Пользователь {user_id} завершил парсинг")
+
+                # Если это был последний пользователь, сбрасываем глобальный флаг
+                if not self.active_parsing_users:
+                    self.is_running = False
+                    logger.info("Все пользователи завершили парсинг")
+
+    def stop_parsing(self, user_id: str = None):
+        '''Останавливает парсинг для конкретного пользователя или всех'''
 
