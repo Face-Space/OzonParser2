@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 from typing import Optional
 
 from ..config.settings import Settings
@@ -22,8 +23,8 @@ class AppManager:
         #  (например, чтобы не запускать несколько потоков парсинга одновременно или защитить данные
         #  от одновременного доступа)
         self.stop_event = threading.Event()
-        # threading.Event()  служит индикатором, который можно "поднять", чтобы сообщить другим потокам
-        # — "хватит работать, нужно остановиться"
+        #  нужен для сигнализации между потоками — один поток "сигналит" событие с помощью set(),
+        #  а другие потоки "ждут" этого сигнала через wait() для перехода к следующему этапу работы
         self.last_results = {}  # Глобальные результаты для совместимости
         self.user_results = {}  # Результаты по пользователям: {user_id: results}
         self.telegram_bot: Optional[TelegramBotManager] = None
@@ -88,4 +89,57 @@ class AppManager:
 
     def stop_parsing(self, user_id: str = None):
         '''Останавливает парсинг для конкретного пользователя или всех'''
+        with self.parsing_lock:
+            if user_id:
+                # Останавливаем парсинг для конкретного пользователя
+                if user_id in self.active_parsing_users:
+                    self.active_parsing_users.remove(user_id)
+                    logger.info(f"Остановлен парсинг для пользователя {user_id}")
+
+            else:
+                # Останавливаем все парсинги
+                self.active_parsing_users.clear()
+                logger.info("Остановлен парсинг для всех пользователей")
+
+            # Если нет активных пользователей, сбрасываем глобальный флаг
+            if not self.active_parsing_users:
+                self.stop_event.set()
+                # Метод .set() меняет этот флаг на True, тем самым сигнализируя, что событие произошло
+                # Таким образом, событие служит простым механизмом для синхронизации потоков: один поток вызывает
+                # set(), сигнализируя об этом, и другие потоки, ждущие этого события через wait(), продолжают работу
+                self.is_running = False
+
+    def _parsing_task(self, category_url: str, selected_fields: list = None, user_id: str = None):
+        start_time = time.time()
+        link_parser = OzonLinkParser(category_url, self.settings.MAX_PRODUCTS, user_id)
+
+        success, product_links = link_parser.start_parsing()
+
+        if self.stop_event.is_set():
+            return
+
+        if not success or not product_links:
+            logger.error("Не удалось собрать ссылки товаров")
+            return
+
+        if self.stop_event.is_set():
+            return
+
+        product_parser = OzonProductParser(self.settings.MAX_WORKERS, user_id)
+        product_results = product_parser.parse_products(product_links)
+
+        # Принудительно закрываем все воркеры продуктов перед началом парсинга продавцов
+        product_parser.cleanup()
+
+        if self.stop_event.is_set():
+            return
+
+        seller_ids = []
+        for product in product_results:
+            if product.seller_id and product.success:
+                seller_ids.append(product.seller_id)
+
+
+
+
 
