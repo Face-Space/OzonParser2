@@ -4,6 +4,7 @@ import time
 from typing import Optional
 
 from ..config.settings import Settings
+from ..parsers.link_parser import OzonLinkParser
 from ..telegram.bot_manager import TelegramBotManager
 
 
