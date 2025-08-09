@@ -1,13 +1,17 @@
+import json
 import logging
+import time
+
 from selenium import webdriver
 from typing import Optional
 
-from selenium.common.exceptions import WebDriverException
+from selenium.common.exceptions import WebDriverException, TimeoutException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.wait import WebDriverWait
 from selenium_stealth import stealth
 
 logger = logging.getLogger(__name__)
+
 
 class SeleniumManager:
 
@@ -109,7 +113,137 @@ class SeleniumManager:
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option("useAutomationExtension", False)
         chrome_options.add_experimental_option("perfLoggingPrefs", {'enableNetwork': True, 'enablePage': False})
-        #
+        # Параметры внутри словаря сообщают ChromeDriver, какие именно события производительности логировать:
+        # 'enableNetwork': True — включить сбор сетевых событий (например, запросы и ответы HTTP).
+        # 'enablePage': False — отключить события, связанные с загрузкой страницы и изменениями DOM.
+        chrome_options.add_experimental_option('loggingPrefs', {'performance': 'ALL'})
+        # 'performance': 'ALL' означает, что в логах производительности должны сохраняться все доступные события.
+        # Это гарантирует, что при вызове driver.get_log('performance') мы получим полный лог сетевых событий,
+        # который был включен первой настройкой
+
+        chrome_options.add_argument("--disable-extensions")
+        chrome_options.add_argument("--disable-plugins")
+
+        if self.headless:
+            chrome_options.add_argument("--headless")
+
+        chrome_options.add_argument("--window-size=1920,1080")
+
+        try:
+            driver = webdriver.Chrome(options=chrome_options)
+
+            stealth(
+                driver,
+                languages=["ru-RU", "ru"],
+                vendor="Google Inc.",
+                platform="Win32",
+                webgl_vendor="Intel Inc.",
+                renderer="Intel Iris OpenGL Engine",
+                fix_hairline=True
+            )
+
+            driver.implicitly_wait(20)
+            driver.set_page_load_timeout(60)
+
+            driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+
+            self.driver = driver
+            self.wait = WebDriverWait(driver, 20)
+
+            logger.info("Chrome драйвер с логированием создан успешно")
+            return driver
+
+        except WebDriverException as e:
+            logger.error(f"Ошибка создания Chrome драйвера с логированием: {e}")
+            raise
+
+
+    def navigate_to_url(self, url: str):
+        if not self.driver:
+            logger.error("Драйвер не инициализирован")
+            return False
+
+        try:
+            logger.debug(f"Переход по URL: {url}")
+            self.driver.get(url)
+
+            self._wait_for_antibot_bypass()
+
+            return True
+
+        except TimeoutException:
+            logger.error(f"Таймаут при загрузке: {url}")
+            return False
+
+        except WebDriverException as e:
+            logger.error(f"Ошибка WebDriver: {e}")
+            return False
+
+
+    def wait_for_json_response(self, timeout: int = 90) -> Optional[str]:
+        if not self.driver:
+            return None
+
+        try:
+            logger.debug("Ожидание JSON ответа...")
+            start_time = time.time()
+
+            WebDriverWait(self.driver, 30).until(
+                lambda driver: driver.execute_script("return document.readyState") == "complete"
+                # Ожидает до 30 секунд, пока значение document.readyState в браузере не станет "complete"
+            )
+
+            while time.time() - start_time < timeout:
+                try:
+                    page_source = self.driver.page_source
+                    json_content = self._extract_json_from_html(page_source)
+
+                    if json_content:
+                        try:
+                            data = json.loads(json_content)
+                            # loads предназначена для преобразования (десериализации) строки в формате JSON
+                            # в соответствующий объект Python
+
+                            if "widgetStates" in data:
+                                logger.debug("JSON ответ с widgetStates найден")
+                                return json_content
+
+                        except json.JSONDecodeError:
+                            pass
+
+                    time.sleep(2.5)  # Увеличенное время ожидания между проверками
+
+                except Exception as e:
+                    logger.debug(f"Ошибка проверки содержимого страницы: {e}")
+                    time.sleep(2.5)  # Увеличенное время ожидания при ошибке
+                    continue
+
+            logger.warning(f"Таймаут ожидания JSON ответа после {timeout} секунд")
+            return self._extract_json_from_html(self.driver.page_source)
+
+        except Exception as e:
+            logger.error(f"Ошибка ожидания JSON ответа: {e}")
+            return None
+
+
+    def _extract_json_from_html(self, html_content: str) -> Optional[str]:
+        try:
+            import re
+
+            pre_pattern = r'<pre[^>]*>(.*?)</pre>'
+            # этот шаблон ищет содержимое между тегами <pre> и </pre>, включая любые атрибуты в открывающем теге
+
+            pre_match = re.search(pre_pattern, html_content, re.DOTALL | re.IGNORECASE)
+            # флаг, который говорит, что для символа . (любой символ) учитываются ВСЕ символы, в том числе
+            # и перенос строки \n. Без флага DOTALL символ . не захватывает переносы строк
+            # re.IGNORECASE — флаг, который делает поиск регистр-независимым.
+            # Это значит, что <pre>, <PRE>, <Pre> и т.п. будут распознаны одинаково
+
+            if pre_match:
+                json_content = pre_match.group(1).strip()
+                #
+
+
 
 
 
