@@ -166,7 +166,6 @@ class SeleniumManager:
         try:
             logger.debug(f"Переход по URL: {url}")
             self.driver.get(url)
-
             self._wait_for_antibot_bypass()
 
             return True
@@ -241,9 +240,96 @@ class SeleniumManager:
 
             if pre_match:
                 json_content = pre_match.group(1).strip()
-                #
+                # метод group возвращает часть текста, которая совпала с группой в регулярном выражении.
+                # Здесь group(1) означает: взять текст, который совпал с первой захватывающей группой
+                # (то есть первой парой круглых скобок) в вашем регулярном выражении.
+                logger.debug("JSON найден в <pre> теге")
+                return json_content
+
+            first_brace = html_content.find('{')
+            last_brace = html_content.rfind('}')
+            # rfind метод строк, который ищет последнее вхождение подстроки в строку и возвращает индекс этого вхождения
+            #  Если подстрока не найдена, возвращается −1
+
+            if first_brace != -1 and last_brace != -1 and first_brace < last_brace:
+                json_content = html_content[first_brace:last_brace + 1]
+                # Вырезается подстрока из html_content, начиная с позиции first_brace и до last_brace + 1
+                # (в срезах Python конечный индекс не включается, поэтому добавляем +1, чтобы захватить скобку })
+                logger.debug("JSON найден по поиску скобок")
+                return json_content
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Ошибка извлечения JSON из HTML: {e}")
+            return None
 
 
+    def _wait_for_antibot_bypass(self, max_wait_time: int = 240):   # ⬅️ 120 → 240
+        start_time = time.time()
+        reload_attempts = 0
+        max_reload_attempts = 3
+
+        while time.time() - start_time < max_wait_time:
+            try:
+                if self._is_blocked():
+                    if reload_attempts < max_reload_attempts:
+                        logger.info(
+                            f"Обнаружена блокировка, перезагрузка страницы"
+                            f"(попытка {reload_attempts + 1}/{max_reload_attempts})"
+                        )
+                        self.driver.refresh()
+                        reload_attempts += 1
+                        time.sleep(15)
+                        continue
+                    else:
+                        logger.warning("Превышено количество попыток, возвращаем новый драйвер")
+                        raise Exception("Access blocked after retries")
+                else:
+                    logger.info("Антибот защита пройдена")
+                    return
+
+            except Exception as e:
+                if "Access blocked" in str(e):
+                    raise
+                time.sleep(15)
+                continue
+
+        logger.warning(f"Антибот защита не пройдена за {max_wait_time} секунд")
+        raise Exception("AntibotTimeout")
 
 
+    def _is_blocked(self) -> bool:
+        if not self.driver:
+            return True
 
+        try:
+            blocked_indicators = [
+                "cloudflare", "checking your browser", "enable javascript",
+                "access denied", "blocked", "ddos-guard", "проверка браузера",
+                "доступ ограничен", "access restricted"
+            ]
+
+            page_source = self.driver.page_source.lower()
+
+            for indicator in blocked_indicators:
+                if indicator in page_source:
+                    return True
+            return False
+
+        except Exception:
+            return True
+
+
+    def close(self):
+        if self.driver:
+            try:
+                self.driver.quit()
+                logger.debug("Драйвер закрыт успешно")
+                
+            except Exception as e:
+                logger.error(f"Ошибка закрытия драйвера: {e}")
+
+            finally:
+                self.driver = None
+                self.wait = None
