@@ -24,7 +24,7 @@ class UserSession:
     processed_items: int = 0
 
 class ResourceManager:
-    '''Менеджер для динамического распределения воркеров между пользователями'''
+    """Менеджер для динамического распределения воркеров между пользователями"""
 
     # Константы
     MAX_TOTAL_WORKERS = 15
@@ -41,11 +41,11 @@ class ResourceManager:
 
 
     def _start_cleanup_thread(self):
-        '''Запускает поток для очистки устаревших сессий'''
+        """Запускает поток для очистки устаревших сессий"""
         def cleanup_loop():
             while True:
                 try:
-                    self._cleanup_expired_session()
+                    self._cleanup_expired_sessions()
                     time.sleep(60)   # Проверяем каждую минуту
                 except Exception as e:
                     logger.error(f"Ошибка в потоке очистки сессий: {e}")
@@ -56,7 +56,7 @@ class ResourceManager:
 
 
     def start_parsing_session(self, user_id: str, stage: str, total_items: int) -> int:
-        '''
+        """
         Начинает новую сессию парсинга для пользователя
 
         Args:
@@ -66,7 +66,7 @@ class ResourceManager:
 
         Returns:
             Количество выделенных воркеров
-        '''
+        """
         with self._lock:
             current_time = datetime.now()
 
@@ -102,14 +102,14 @@ class ResourceManager:
 
 
     def update_progress(self, user_id: str, processed_items: int):
-        '''Обновляет прогресс пользователя'''
+        """Обновляет прогресс пользователя"""
         with self._lock:
             if user_id in self._active_sessions:
                 self._active_sessions[user_id].processed_items = processed_items
 
 
     def finish_parsing_session(self, user_id: str):
-        '''Завершает сессию парсинга пользователя'''
+        """Завершает сессию парсинга пользователя"""
         with self._lock:
             if user_id in self._active_sessions:
                 del self._active_sessions[user_id]
@@ -232,7 +232,7 @@ class ResourceManager:
 
 
     def _calculate_optimal_workers(self, total_items: int) -> int:
-        '''Рассчитывает оптимальное количество воркеров для количества элементов'''
+        """Рассчитывает оптимальное количество воркеров для количества элементов"""
         if total_items <= 10:
             return 1
         elif total_items <= 25:
