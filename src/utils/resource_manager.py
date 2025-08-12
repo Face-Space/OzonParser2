@@ -2,7 +2,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict
 
 logger = logging.getLogger(__name__)
@@ -131,6 +131,7 @@ class ResourceManager:
                 return self._active_sessions[user_id].allocated_workers
             return self.MIN_WORKERS_PER_USER
 
+
     def get_status(self) -> Dict:
         """Возвращает статус всех активных сессий"""
         with self._lock:
@@ -139,3 +140,126 @@ class ResourceManager:
                 'total_allocated_workers': sum(session.allocated_workers for session in self._active_sessions.values()),
                 'sessions': {}
             }
+
+            for user_id, session in self._active_sessions.items():
+                progress_percent = 0
+                if session.total_items > 0:
+                    progress_percent = (session.processed_items / session.total_items) * 100
+
+                status['sessions'][user_id] = {
+                    'stage': session.current_stage,
+                    'workers': session.allocated_workers,
+                    'progress': f"{session.processed_items}/{session.total_items} ({progress_percent:.1f})%",
+                    # :.1f - один знак после запятой
+                    'duration': str(datetime.now() - session.start_time).split('.')[0]
+                }
+
+            return status
+
+
+    def _calculate_workers_for_new_user(self, total_items: int) -> int:
+        """Рассчитывает количество воркеров для нового пользователя"""
+        active_users = len(self._active_sessions)
+
+        if active_users == 0:
+            # Первый пользователь получает максимум воркеров
+            return min(self.MAX_WORKERS_PER_USER, self._calculate_optimal_workers(total_items))
+
+        # Рассчитываем справедливое распределение
+        available_workers = self.MAX_TOTAL_WORKERS
+        target_users = active_users + 1  # Включаем нового пользователя
+
+        workers_per_user = max(self.MIN_WORKERS_PER_USER, min(self.MAX_WORKERS_PER_USER, available_workers // target_users))
+
+        return workers_per_user
+
+
+    def _redistribute_workers(self):
+        """Перераспределяет воркеры между всеми активными пользователями"""
+        if not self._active_sessions:
+            return
+
+        active_users = len(self._active_sessions)
+        available_workers = self.MAX_TOTAL_WORKERS
+
+        # Справедливое распределение без приоритета по времени
+        base_workers_per_user = max(self.MIN_WORKERS_PER_USER, min(self.MAX_WORKERS_PER_USER,
+                                                                   available_workers // active_users))
+
+        # Распределяем базовое количество всем пользователям
+        total_allocated = 0
+        for session in self._active_sessions.values():
+            session.allocated_workers = base_workers_per_user
+            total_allocated += base_workers_per_user
+
+        # Распределяем оставшиеся воркеры равномерно (round - robin)
+        # то есть циклически проходя по списку сессий, поочерёдно выделяем каждому дополнительного воркера,
+        # пока они не закончатся
+
+        remaining_workers = available_workers - total_allocated
+        if remaining_workers > 0:
+            # Создаём список пользователей для равномерного распределения
+            user_list = list(self._active_sessions.values())
+            user_index = 0
+
+            while remaining_workers > 0:
+                session = user_list[user_index]
+                if session.allocated_workers < self.MAX_WORKERS_PER_USER:
+                    session.allocated_workers += 1
+                    remaining_workers -= 1
+
+                user_index = (user_index + 1) % len(user_list)
+                # Обновляем индекс так, чтобы он циклически переходил к следующему пользователю.
+                # Оператор % — взятие остатка от деления, позволяет при достижении конца списка начать заново с начала.
+                # Например, если len(user_list) == 5, и user_index == 4 (последний элемент),
+                # то (4 + 1) % 5 = 0 — индекс возвращается к первому пользователю.
+                # Это реализует именно круговой обход списка (round-robin)
+
+                # Защита от бесконечного цикла
+                if all(s.allocated_workers >= self.MAX_WORKERS_PER_USER for s in user_list):
+                    break
+
+                # Проверяется, что у всех сессий в списке количество выделенных воркеров достигло максимума (MAX_WORKERS_PER_USER).
+                # Если все пользователи уже получили максимально возможное количество воркеров,
+                # дальнейшее распределение невозможно.
+                # all() возвращает True, если все элементы итерируемого объекта приводятся к True (т.е. истинны),
+                # False, если хотя бы один элемент — это False.
+
+        # Логгируем новое распределение
+        logger.info(f"Справедливое распределение воркеров для {active_users} пользователей:")
+        for user_id, session in self._active_sessions.items():
+            logger.info(f"  Пользователь {user_id}: {session.allocated_workers} воркеров ({session.current_stage})")
+
+
+    def _calculate_optimal_workers(self, total_items: int) -> int:
+        '''Рассчитывает оптимальное количество воркеров для количества элементов'''
+        if total_items <= 10:
+            return 1
+        elif total_items <= 25:
+            return 2
+        elif total_items <= 50:
+            return 3
+        elif total_items <= 100:
+            return 4
+        else:
+            return 5  # Максимум 5 воркеров на пользователя
+
+    def _cleanup_expired_sessions(self):
+        """Очищает устаревшие сессии"""
+        with self._lock:
+            current_time = datetime.now()
+            expired_users = []
+
+            for user_id, session in self._active_sessions.items():
+                if current_time - session.start_time > timedelta(minutes=self.SESSION_TIMEOUT_MINUTES):
+                    expired_users.append(user_id)
+
+            for user_id in expired_users:
+                logger.info(f"Удаление устаревшей сессии пользователя {user_id}")
+                del self._active_sessions[user_id]
+
+            if expired_users:
+                self._redistribute_workers()
+
+# Глобальный экземпляр менеджера ресурсов
+resource_manager = ResourceManager()
