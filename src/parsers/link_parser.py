@@ -1,9 +1,16 @@
+import json
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Tuple, Dict
 
+from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from ..utils.selenium_manager import SeleniumManager
+from ..utils.resource_manager import resource_manager
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +29,7 @@ class OzonLinkParser:
         self.timestamp = datetime.now().strftime("%d.%m.%Y_%H-%M-%S")
         self.output_folder = f"{self.category_name}_{self.timestamp}"
 
+
     def _extract_category_name(self, url: str) -> str:
         try:
             match = re.search(f'/category/([^/]+)-(\d+)/', url)
@@ -35,13 +43,147 @@ class OzonLinkParser:
         except Exception:
             return "unknown_category"
 
+
     def start_parsing(self) -> Tuple[bool, Dict[str, str]]:
         try:
             # Регистрируем сессию парсинга ссылок
             if self.user_id:
                 resource_manager.start_parsing_session(self.user_id, 'links', self.max_products)
 
+            self._create_output_folder()
+            self.driver = self.selenium_manager.create_driver()
+
+            if not self._load_page():
+                return False, {}
+
+            self._collect_links()
+            success = self._save_links()
+
+            logger.info(f"Собрано {len(self.collected_links)} ссылок для пользователя {self.user_id}")
+            return success, self.collected_links
+
+        except Exception as e:
+            logger.error(f"Ошибка парсинга ссылок: {e}")
+            return False, {}
+        finally:
+            self._cleanup()
+            # Завершаем сессию парсинга ссылок
+            if self.user_id:
+                resource_manager.finish_parsing_session(self.user_id)
 
 
+    def _load_page(self) -> bool:
+        try:
+            if not self.selenium_manager.navigate_to_url(self.category_url):
+                return False
 
+            WebDriverWait(self.driver, 60).until(
+                EC.presence_of_element_located((By.ID, "contentScrollPaginator"))
+            )
+            return True
+
+        except TimeoutException:
+            logger.error("Контейнер товаров не найден")
+            return False
+        except Exception as e:
+            logger.error(f"Ошибка загрузки страницы: {e}")
+            return False
+
+
+    def _collect_links(self):
+        seen_urls = set()
+        scroll_num = 0
+        no_new_items_count = 0
+
+        while len(self.collected_links) < self.max_products:
+            scroll_num += 1
+            current_items = self._extract_all_links()
+
+            new_count = 0
+            for url, img_url in current_items.items():
+                if url not in seen_urls and len(self.collected_links) < self.max_products:
+                    seen_urls.add(url)
+                    self.collected_links[url] = img_url
+                    new_count += 1
+
+            logger.info(f"Скролл {scroll_num}: +{new_count}, всего {len(self.collected_links)}")
+
+            if new_count == 0:
+                no_new_items_count += 1
+                if no_new_items_count >=3:
+                    break
+
+            else:
+                no_new_items_count = 0
+
+            if len(self.collected_links) >= self.max_products:
+                break
+
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(8)
+
+    def _extract_all_links(self) -> Dict[str, str]:
+        try:
+            container = self.driver.find_element(By.ID, "contentScrollPaginator")
+            elements = container.find_elements(By.CSS_SELECTOR, "[class*='tile-root']")
+            #  выбрать все элементы, у которых атрибут class содержит подстроку "tile-root" в любом месте
+
+            items = {}
+            for element in elements:
+                try:
+                    link_element = element.find_element(By.CSS_SELECTOR, "a[data-prerender='true']")
+                    href = link_element.get_attribute("href")
+
+                    img_element = element.find_element(By.CSS_SELECTOR, "img")
+                    img_url = img_element.get_attribute("src")
+
+                    if href and href.startswith("https://www.ozon.ru/product/") and img_url:
+                        items[href] = img_url
+
+                except Exception:
+                    continue
+            return items
+
+        except Exception as e:
+            logger.warning(f"Ошибка извлечения ссылок: {e}")
+            return {}
+
+
+    def _create_output_folder(self):
+        from pathlib import Path
+        base_output_dir = Path(__file__).parent.parent.parent / "output"
+        self.output_dir = base_output_dir / self.output_folder
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # parents=True — если указанных родительских папок ещё нет, создать и их тоже (рекурсивно)
+
+
+    def _save_links(self) -> bool:
+        try:
+            filename = f"links_{self.output_folder}.json"
+            file_path = self.output_dir / filename
+
+            links_to_save = dict(list(self.collected_links.items())[:self.max_products])
+
+            with open(file_path, 'w', encoding="utf-8") as f:
+                json.dump(links_to_save, f, ensure_ascii=False, indent=2)
+            # dump - функция из модуля json, которая сериализует (преобразует) Python-объект в JSON и
+            # записывает его непосредственно в открытый файл f
+            return True
+
+        except Exception as e:
+            logger.error(f"Ошибка сохранения ссылок: {e}")
+            return False
+
+    def _cleanup(self):
+        if self.selenium_manager:
+            self.selenium_manager.close()
+
+
+    def get_article_from_url(self, url: str) -> str:
+        try:
+            match = re.search(r'/product/[^/]+-(\d+)/', url)
+            return match.group(1) if match else ""
+            # возвращает содержимое первой захваченной группы в шаблоне, то есть цифры, выделенные (\d+)
+        except Exception:
+            return ""
 
