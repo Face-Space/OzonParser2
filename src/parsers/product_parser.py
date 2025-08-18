@@ -64,6 +64,21 @@ class ProductWorker:
                 if result.success and image_from_links:
                     result.image_url = image_from_links
 
+                results.append(result)
+
+                if result.success:
+                    logger.info(f"Воркер {self.worker_id}: Товар {article} обработан успешно")
+                else:
+                    logger.warning(f"Воркер {self.worker_id}: Ошибка товара {article}:{result.error}")
+
+            except Exception as e:
+                logger.error(f"Воркер {self.worker_id}: Критическая ошибка товара {article}: {e}")
+                results.append(ProductInfo(article=article, error=str(e)))
+
+            time.sleep(1.5)
+
+        return results
+
 
     def _parse_single_product(self, article: str) -> ProductInfo:
         max_retries = 3
@@ -146,14 +161,30 @@ class ProductWorker:
                         product_info.seller_link = f"https://ozon.ru/seller/{seller_id.group(1)}"
 
             # Ищем информацию о ценах в webPrice
+            price_data = self._find_price_data(widget_states)
+            if price_data:
+                product_info.card_price = self._extract_price_number(price_data.get('cardPrice', ''))
+                product_info.price = self._extract_price_number(price_data.get('price', ''))
+                product_info.original_price = self._extract_price_number(price_data.get('originalPrice', ''))
 
+            # Проверяем, что получили основную информацию
+            if product_info.name or product_info.card_price:
+                product_info.success = True
+            else:
+                product_info.error = "Не найдена основная информация о товаре"
 
+            return product_info
+
+        except json.JSONDecodeError as e:
+            return ProductInfo(article=article, error=f"Ошибка парсинга JSON: {str(e)}")
+        except Exception as e:
+            return ProductInfo(article=article, error=f"Ошибка обработки данных: {str(e)}")
 
 
     def _find_sticky_product_data(self, widget_states: Dict) -> Optional[Dict]:
         # аннотация типа, которая обозначает, что значение может быть либо словарём (dict), либо None
         for key, value in widget_states.items():
-            if key.startswith('webPrice-') and isinstance(value, str):
+            if key.startswith('webStickyProducts-') and isinstance(value, str):
                 # isinstance(value, str) - проверка является ли объект value экземпляром типа str
                 try:
                     return json.loads(value)
@@ -165,6 +196,32 @@ class ProductWorker:
         # в удобные для работы структуры Python.
         # Поэтому в коде сначала проверяют, что value — строка (корректный формат JSON), а уже потом парсят эту
         # строку в Python-объект
+
+    def _find_price_data(self, widget_states: Dict) -> Optional[Dict]:
+        for key, value in widget_states.items():
+            if key.startswith("webPrice-") and isinstance(value, str):
+                try:
+                    return json.loads(value)
+                except json.JSONDecodeError:
+                    continue
+        return None
+
+
+    def _extract_price_number(self, price_str: str) -> int:
+        if not price_str:
+            return 0
+
+        try:
+            cleaned = re.sub(r'[^\d]', '', str(price_str))
+            # sub - заменяет все части строки, которые соответствуют заданному шаблону, на указанный текст
+            return int(cleaned) if cleaned else 0
+        except:
+            return 0
+
+    def close(self):
+        if self.selenium_manager:
+            self.selenium_manager.close()
+        logger.info(f"Воркер {self.worker_id} закрыт")
 
 
 class OzonProductParser:
@@ -219,11 +276,14 @@ class OzonProductParser:
         except Exception:
             return ""
 
+
     def _parse_single_worker(self, articles: List[str]) -> List[ProductInfo]:
         worker = ProductWorker(1)
-
-
-
+        try:
+            worker.initialize()
+            return worker.parse_products(articles, self.product_links)
+        finally:
+            worker.close()
 
 
     def _calculate_optimal_workers(self, total_links: int) -> int:
@@ -235,5 +295,21 @@ class OzonProductParser:
             return 3
         else:
             return min(5, self.max_workers)  # Максимум 5 воркеров
+
+
+    def _parse_multiple_workers(self, articles: List[str], num_workers: int) -> List[ProductInfo]:
+        chunks = self._distribute_articles(articles, num_workers)
+
+
+    def _distribute_articles(self, articles: List[str], num_workers: int) -> List[List[str]]:
+        chunks = [[] for _ in range(num_workers)]
+
+        for i, article in enumerate(articles):
+            worker_index = i % num_workers
+            # Остаток от деления обеспечивает цикличное распределение; если num_workers 3,
+            # то статьи будут распределены как 0,1,2,0,1,2 и так далее
+            chunks[worker_index].append(article)
+
+        return chunks
 
 
