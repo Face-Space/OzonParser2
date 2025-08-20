@@ -4,6 +4,7 @@ import time
 from typing import Optional
 
 from ..config.settings import Settings
+from ..parsers.product_parser import OzonProductParser
 from ..parsers.link_parser import OzonLinkParser
 from ..telegram.bot_manager import TelegramBotManager
 
@@ -71,7 +72,7 @@ class AppManager:
     # _ - это функция предназначена для внутреннего использования и не должна использоваться
     # напрямую за пределами данного класса или модуля
     def _parsing_task_wrapper(self, category_url: str, selected_fields: list = None, user_id: str = None):
-        '''Wrapper для парсинга с правильной очисткой ресурсов'''
+        """Wrapper для парсинга с правильной очисткой ресурсов"""
         try:
             self._parsing_task(category_url, selected_fields, user_id)
         except Exception as e:
@@ -89,7 +90,7 @@ class AppManager:
                     logger.info("Все пользователи завершили парсинг")
 
     def stop_parsing(self, user_id: str = None):
-        '''Останавливает парсинг для конкретного пользователя или всех'''
+        """Останавливает парсинг для конкретного пользователя или всех"""
         with self.parsing_lock:
             if user_id:
                 # Останавливаем парсинг для конкретного пользователя
@@ -139,6 +140,15 @@ class AppManager:
         for product in product_results:
             if product.seller_id and product.success:
                 seller_ids.append(product.seller_id)
+
+        unique_seller_ids = list(set(seller_ids))
+
+
+        seller_results = []
+        if unique_seller_ids:
+            logger.info(f"Начинаем парсинг {len(unique_seller_ids)} продавцов после закрытия всех воркеров продуктов.")
+            seller_parser = OzonSellerParser(self.settings.MAX_WORKERS, user_id)
+            seller_results = seller_parser.parse_sellers(unique_seller_ids)
 
 
 

@@ -2,6 +2,7 @@ import logging
 import json
 import time
 import re
+import concurrent.futures
 from dataclasses import dataclass
 from typing import List, Dict, Optional
 
@@ -300,11 +301,75 @@ class OzonProductParser:
     def _parse_multiple_workers(self, articles: List[str], num_workers: int) -> List[ProductInfo]:
         chunks = self._distribute_articles(articles, num_workers)
 
+        # Логируем распределение
+        for i, chunk in enumerate(chunks):
+            if chunk:
+                logger.info(f"Воркер {i+1}: {len(chunk)} товаров")
+
+        all_results = []
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Создаем пул потоков, где одновременно могут выполняться num_workers потоков.
+            # Пул потоков — это заранее созданная группа потоков, которая многократно используется
+            # для выполнения разных задач
+            # Пул нужен, чтобы улучшить производительность и упростить управление многопоточностью
+
+            future_to_worker = {}
+
+            for i, chunk in enumerate(chunks):
+                if chunk:
+                    future = executor.submit(self._worker_task_with_retry, i + 1, chunk)
+                    # создаём новую задачу с помощью executor.submit
+                    # executor.submit возвращает объект Future, который будет содержать
+                    # результат работы задачи, когда она закончится
+
+                    future_to_worker[future] = i + 1
+                    # В словарь future_to_worker кладём пару «задача — номер воркера»,
+                    # чтобы потом знать, к кому относится результат
+
+            for future in concurrent.futures.as_completed(future_to_worker):
+                # Проходим по задачам в том порядке, в каком они фактически завершились.
+                # as_completed возвращает объекты Future сразу после того, как задача завершилась.
+                # Это значит, что мы можем обрабатывать результаты не дожидаясь, пока закончатся все задачи,
+                # а сразу по мере готовности
+
+                # as_completed принимает итерируемую коллекцию объектов Future (например, список,
+                # множество или ключи словаря).
+                # Мы передаём ключи словаря future_to_worker, потому что именно они являются объектами Future,
+                # представляющими запущенные задачи.
+                # Словарь используется для того, чтобы связывать каждый объект Future с номером воркера (worker_id).
+                # Когда as_completed возвращает завершившийся объект Future, мы можем через этот словарь получить
+                # какой конкретно воркер выполнил это задание (через worker_id = future_to_worker[future])
+
+                worker_id = future_to_worker[future]
+                # Из словаря берем номер воркера, которому принадлежит эта завершённая задача
+
+                try:
+                    results = future.result()
+                    # Здесь мы пытаемся получить результат выполнения задачи вызовом future.result()
+
+                    all_results.extend(results)
+                    # extend() добавляет каждый элемент из переданного итерируемого объекта (например, списка, строки
+                    # или кортежа) по отдельности в конец списка. То есть «распаковывает» добавляемый список и
+                    # добавляет поэлементно
+
+                    logger.info(f"Воркер {worker_id} завершил работу с {len(results)} товарами")
+                except Exception as e:
+                    logger.error(f"Ошибка воркера {worker_id}: {e}")
+
+        return self._sort_results_by_original_order(all_results, articles)
+        # После того, как все потоки выполнили свою работу и мы собрали результаты, вызываем функцию сортировки.
+        # Ее задача — упорядочить результаты так, чтобы они шли в том же порядке, что и исходный список артикулов.
+        # Это важно, потому что параллельные потоки возвращают результаты в произвольном порядке, а нам
+        # нужен список результатов строго по порядку изначальных товаров
+
 
     def _distribute_articles(self, articles: List[str], num_workers: int) -> List[List[str]]:
         chunks = [[] for _ in range(num_workers)]
 
         for i, article in enumerate(articles):
+            # enumerate возвращает пару: индекс i (от 0 до len(articles)-1) и сам элемент article (текст статьи)
+
             worker_index = i % num_workers
             # Остаток от деления обеспечивает цикличное распределение; если num_workers 3,
             # то статьи будут распределены как 0,1,2,0,1,2 и так далее
@@ -312,4 +377,49 @@ class OzonProductParser:
 
         return chunks
 
+
+    def _worker_task_with_retry(self, worker_id: int, articles: List[str]) -> List[ProductInfo]:
+        max_worker_retries = 3
+
+        for attempt in range(max_worker_retries):
+            worker = ProductWorker(worker_id)
+            try:
+                worker.initialize()
+                results = worker.parse_products(articles, self.product_links)
+                return results
+
+            except Exception as e:
+                if "Access blocked" in str(e) and attempt < max_worker_retries - 1:
+                    logger.warning(f"Воркер {worker_id} заблокирован, пересоздаём (попытка {attempt + 1}/3)")
+                    time.sleep(15)
+                    continue
+                else:
+                    raise
+
+            finally:
+                # Гарантируем закрытие воркера в любом случае
+                worker.close()
+        return []
+
+
+    def _sort_results_by_original_order(self, results: List[ProductInfo], original_articles: List[str]) -> List[ProductInfo]:
+        result_dict = {result.article: result for result in results}
+        # Создаём словарь, где ключ — артикул из результата (result.article), а значение — сам объект ProductInfo.
+        # Это удобно, чтобы быстро находить результат по артикулу, без перебора всего списка
+
+        return [result_dict.get(article, ProductInfo(article=article, error='Не обработан'))
+                for article in original_articles]
+        # Для каждого артикула:
+        # Пытаемся получить обработанный объект из словаря — result_dict.get(article)
+        # Если объекта с таким артикулом нет (значит по какой-то причине товар не обработался),
+        # создаём новый объект ProductInfo с полем ошибки 'Не обработан'.
+        # Таким образом, в конце мы получаем список точно того же размера и порядка, что и исходный ввод,
+        # но с объектами результатов, либо с пометкой об ошибке
+
+    def cleanup(self):
+        """Принудительная очистка всех ресурсов парсера"""
+        logger.info("Очистка ресурсов парсера товаров...")
+        # Даём время на завершение всех потоков
+        time.sleep(2)
+        logger.info(f"Ресурсы товаров парсера очищены")
 
