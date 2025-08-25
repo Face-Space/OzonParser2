@@ -6,6 +6,7 @@ from typing import Optional
 from ..config.settings import Settings
 from ..parsers.product_parser import OzonProductParser
 from ..parsers.link_parser import OzonLinkParser
+from ..parsers.seller_parser import OzonSellerParser
 from ..telegram.bot_manager import TelegramBotManager
 
 
@@ -149,6 +150,57 @@ class AppManager:
             logger.info(f"Начинаем парсинг {len(unique_seller_ids)} продавцов после закрытия всех воркеров продуктов.")
             seller_parser = OzonSellerParser(self.settings.MAX_WORKERS, user_id)
             seller_results = seller_parser.parse_sellers(unique_seller_ids)
+            # Закрываем воркеры продавцов после завершения
+            seller_parser.cleanup()
+
+        if self.stop_event.is_set():
+            return
+
+        # Метод is_set() возвращает True, если это событие было установлено (set), то есть произошло некоторое
+        # условие или сигнал для остановки.
+
+        seller_data = {}
+        for seller in seller_results:
+            if seller.success:
+                seller_data[seller.seller_id] = seller
+
+        end_time = time.time()
+        total_time = end_time - start_time
+        successful_products = len([p for p in product_results if p.success])
+        failed_products = len([p for p in product_results if not p.success])
+        avg_time_per_product = total_time / len(product_results) if product_results else 0
+
+        # Сохраняем результаты для конкретного пользователя
+        user_results = {
+            'links': product_links,
+            'products': product_results,
+            'sellers': seller_results,
+            'category_url': category_url,
+            'total_products': len(product_results),
+            'successful_products': successful_products,
+            'failed_products': failed_products,
+            'total_sellers': len(seller_results),
+            'successful_sellers': len([s for s in seller_results if s.success]),
+            'output_folder': getattr(link_parser, 'output_folder', 'unknown'),
+            'seller_data': seller_data,
+            'selected_fields': selected_fields,
+            'parsing_stats': {
+                'total_time': total_time,
+                'successful_products': successful_products,
+                'failed_products': failed_products,
+                'average_time_per_product': avg_time_per_product
+            }
+        }
+
+        # Сохраняем результаты для пользователя
+        if user_id:
+            self.user_results[user_id] = user_results
+
+        # Обновляем глобальные результаты для совместимости
+        self.last_results = user_results
+
+
+
 
 
 

@@ -3,6 +3,7 @@ import json
 import time
 import re
 import html
+import concurrent.futures
 from typing import List, Dict, Tuple
 from dataclasses import dataclass
 
@@ -40,12 +41,27 @@ class SellerWorker:
             logger.error(f"Ошибка инициализации продавцов {self.worker_id}: {e}")
             raise
 
+
     def parse_sellers(self, seller_ids: List[str]) -> List[SellerInfo]:
         results = []
 
         for seller_id in seller_ids:
             try:
                 result = self._parse_single_seller(seller_id)
+                results.append(result)
+
+                if result.success:
+                    logger.info(f"Воркер {self.worker_id}: Продавец {seller_id} обработан успешно")
+                else:
+                    logger.warning(f"Воркер {self.worker_id}: Ошибка продавца {seller_id}: {result.error}")
+
+            except Exception as e:
+                logger.error(f"Воркер {self.worker_id}: Критическая ошибка продавца {seller_id}: {e}")
+                results.append(SellerInfo(seller_id=seller_id, error=str(e)))
+
+            time.sleep(1.5)
+
+        return results
 
 
     def _parse_single_seller(self, seller_id: str) -> SellerInfo:
@@ -422,6 +438,11 @@ class SellerWorker:
             return result
 
 
+    def close(self):
+        if self.selenium_manager:
+            self.selenium_manager.close()
+        logger.info(f"Воркер продавцов {self.worker_id} закрыт")
+
 
 class OzonSellerParser:
     def __init__(self, max_workers: int = 5, user_id: str = None):
@@ -478,6 +499,100 @@ class OzonSellerParser:
         else:
             return min(5, self.max_workers) # Максимум 5 воркеров
 
+
+    def _parse_multiple_workers(self, seller_ids: List[str], num_workers: int) -> List[SellerInfo]:
+        chunks = self._distribute_seller_ids(seller_ids, num_workers)
+
+        for i, chunk in enumerate(chunks):
+            if chunk:
+                logger.info(f"Воркер продавцов {i + 1}: {len(chunk)} продавцов")
+
+        all_results = []
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            future_to_worker = {}
+
+            for i, chunk in enumerate(chunks):
+                if chunk:
+                    future = executor.submit(self._worker_task_with_retry, i + 1, chunk)
+                    # создаём новую задачу с помощью executor.submit
+                    # executor.submit возвращает объект Future, который будет содержать
+                    # результат работы задачи, когда она закончится
+                    future_to_worker[future] = i + 1
+                    # В словарь future_to_worker кладём пару «задача — номер воркера»,
+                    # чтобы потом знать, к кому относится результат
+
+            for future in concurrent.futures.as_completed(future_to_worker):
+                # Проходим по задачам в том порядке, в каком они фактически завершились.
+                # as_completed возвращает объекты Future сразу после того, как задача завершилась.
+                # Это значит, что мы можем обрабатывать результаты не дожидаясь, пока закончатся все задачи,
+                # а сразу по мере готовности
+
+                # as_completed принимает итерируемую коллекцию объектов Future (например, список,
+                # множество или ключи словаря).
+                # Мы передаём ключи словаря future_to_worker, потому что именно они являются объектами Future,
+                # представляющими запущенные задачи.
+                # Словарь используется для того, чтобы связывать каждый объект Future с номером воркера (worker_id).
+                # Когда as_completed возвращает завершившийся объект Future, мы можем через этот словарь получить
+                # какой конкретно воркер выполнил это задание (через worker_id = future_to_worker[future])
+                worker_id = future_to_worker[future]
+                try:
+                    results = future.result()
+                    # Здесь мы пытаемся получить результат выполнения задачи вызовом future.result()
+
+                    all_results.extend(results)
+                    # extend() добавляет каждый элемент из переданного итерируемого объекта (например, списка, строки
+                    # или кортежа) по отдельности в конец списка. То есть «распаковывает» добавляемый список и
+                    # добавляет поэлементно
+
+                    logger.info(f"Воркер продавцов {worker_id} завершил работу с {len(results)} продавцами")
+                except Exception as e:
+                    logger.error(f"Ошибка воркера продавцов {worker_id}: {e}")
+
+        return all_results
+
+
+    def _distribute_seller_ids(self, seller_ids: List[str], num_workers: int) -> List[List[str]]:
+        chunks = [[] for _ in range(num_workers)]
+
+        for i, seller_id in enumerate(seller_ids):
+            worker_index = i % num_workers
+            chunks[worker_index].append(seller_id)
+
+        return chunks
+
+
+    def _worker_task_with_retry(self, worker_id: int, seller_ids: List[str]) -> List[SellerInfo]:
+        max_worker_retries = 3
+
+        for attempt in range(max_worker_retries):
+            worker = SellerWorker(worker_id)
+            try:
+                worker.initialize()
+                results = worker.parse_sellers(seller_ids)
+                return results
+
+            except Exception as e:
+                if "Access blocked" in str(e) and attempt < max_worker_retries - 1:
+                    logger.warning(f"Воркер продавцов {worker_id} заблокирован, пересоздаём (попытка {attempt + 1}/3)")
+                    time.sleep(15)
+                    continue
+                else:
+                    raise
+
+            finally:
+                # Гаранитруем закрытие воркера в любом случае
+                worker.close()
+
+        return []
+
+
+    def cleanup(self):
+        """Принудительная очистка всех ресурсов парсера"""
+        logger.info("Очистка ресурсов парсера продавцов...")
+        # Даем время на завершение всех потоков
+        time.sleep(2)
+        logger.info("Ресурсы парсера продавцов очищены")
 
 
 
