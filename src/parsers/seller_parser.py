@@ -71,6 +71,25 @@ class SellerWorker:
 
                 seller_info = self._parse_json_response(seller_id, json_content)
 
+                if seller_info.success:
+                    return seller_info
+                elif attempt < max_retries - 1:
+                    time.sleep(5)
+                    continue
+                else:
+                    return seller_info
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"Попытка {attempt + 1} неудачна для продавца {seller_id}: {e}")
+                    time.sleep(5)
+                    continue
+                else:
+                    return SellerInfo(seller_id=seller_id, error=f"Ошибка парсинга: {str(e)}")
+
+        return SellerInfo(seller_id=seller_id, error="Превышено количество попыток")
+
+
 
     def _parse_json_response(self, seller_id: str, json_content: str) -> SellerInfo:
         try:
@@ -85,10 +104,35 @@ class SellerWorker:
             # 1. Выбираем лучший textBlock
             seller_info.company_name, seller_info.inn = self._pick_best_text_block(widget_states)
 
+            # 2. cellList - без изменений
+            for key, value in widget_states.items():
+                if key.startswith('cellList-') and isinstance(value, str):
+                    cell_data = self._extract_cell_list_data(value)
+                    if any(cell_data.values()):
+                        seller_info.orders_count = cell_data.get("orders", "")
+                        seller_info.working_time = cell_data.get("working_time", "")
+                        seller_info.average_rating = cell_data.get("rating", "")
+                        seller_info.reviews_count = cell_data.get("reviews", "")
+                        break
+
+            # 3. Success check
+            if seller_info.company_name or seller_info.inn or seller_info.orders_count or seller_info.reviews_count:
+                seller_info.success = True
+
+            else:
+                seller_info.error = "Не найдена основная информация о продавце"
+
+            return seller_info
+
+        except json.JSONDecodeError as e:
+            return SellerInfo(seller_id=seller_id, error=f"Ошибка парсинга JSON: {str(e)}")
+        except Exception as e:
+            return SellerInfo(seller_id=seller_id, error=f"Ошибка обработки данных: {str(e)}")
+
 
     def _pick_best_text_block(self, widget_states: Dict[str, str]) -> Tuple[str, str]:
         best_company, best_inn = "", ""
-        best_score = ""
+        best_score = 0
 
         # Сначала собираем все textBlock'и с их данными
         text_blocks = []
@@ -111,6 +155,48 @@ class SellerWorker:
             inn = block["inn"]
 
             score = self._calculate_text_block_score(company, inn, block['raw_data'])
+
+            if score > best_score:
+                best_company, best_inn, best_score = company, inn, score
+
+        # Если не нашли подходящий блок, пробуем альтернативную стратегию
+        if best_score <= 0:
+            return self._fallback_text_block_search(widget_states)
+
+        return best_company, best_inn
+
+
+    def _fallback_text_block_search(self, widget_states: Dict[str, str]) -> Tuple[str, str]:
+        """Альтернативная стратегия поиска названия компания"""
+        # Ищем textBlock, который находится рядом с cellList (обычно название компании идёт перед статистикой)
+        text_blocks_with_positions = []
+
+        for key, value in widget_states.items():
+            if key.startswith("textBlock-"):
+                # Извлекаем номер из ключа для определения позиции
+                match = re.search(r'textBlock-(\d+)', key)
+                if match:
+                    position = int(match.group(1))
+                    company, inn = self._extract_company_data(value)
+                    if company:  # Только если есть текст
+                        text_blocks_with_positions.append({
+                            'position': position,
+                            'company': company,
+                            'inn': inn,
+                            'key': key
+                        })
+
+        # Сортируем по позиции и берём первый подходящий
+        text_blocks_with_positions.sort(key=lambda x: x['position'])
+        # указывает Python сортировать элементы списка по значению поля 'position' внутри каждого словаря x
+
+        for block in text_blocks_with_positions:
+            company = block["company"]
+            # Проверяем, что это не служебный текст
+            if not any(phrase in company.lower() for phrase in ["о магазине", "оригинальные товары", "premium"]):
+                return company, block['inn']
+
+        return "", ""
 
 
     def _calculate_text_block_score(self, company: str, inn: str, raw_data: str) -> int:
@@ -166,10 +252,13 @@ class SellerWorker:
                     # Проверяем, что второй текст похож на график работы
                     work_schedule_keywords = ["график", "работает", "согласно", "ozon", "время"]
                     if any(keyword in second_text.lower() for keyword in work_schedule_keywords):
+                        # any() - принимает итерируемый объект и возвращает True, если хотя бы один элемент в этом объекте истинный
                         score += 8  # Хороший признак правильного блока
 
                     # Дополнительная проверка первого текста на название компании
                     if first_text and not any(phrase.lower() in first_text.lower() for phrase in unwanted_phrases):
+                        # Если хотя бы одна фраза найдена, any вернет True, а not сделает это False
+                        # Соответственно, если ни одной фразы нет, условие not any(...) будет True
                         score += 5
 
         except:
@@ -228,7 +317,6 @@ class SellerWorker:
             return "", ""
 
 
-
     def _extract_company_name_from_text(self, text: str) -> str:
         """Извлекает название компании из текста, обрабатывая <br> теги"""
         if not text:
@@ -245,8 +333,17 @@ class SellerWorker:
             else:
                 # Если <br> тегов нет, проверяем на ИНН в конце строки
                 inn_match = re.search(r"(\d{10,15})$", text)
+                # этот код пытается найти в конце строки text число из 10–15 цифр
                 if inn_match:
                     company = text[:inn_match.start()].strip()
+                    # start - метод объекта совпадения inn_match, который возвращает индекс начала найденного
+                    # совпадения в строке text
+                    # Метод start() — стандартный метод объектов типа re.Match из модуля re, он не является отдельной
+                    # функцией модуля, а именно методом объекта результатов поиска
+
+                    # срез строки text от начала до позиции, где начинается найденное совпадение (то есть до начала
+                    # последовательности из 10–15 цифр, найденной в конце)
+
                     # Убираем возможные разделители
                     company = re.sub(r'[,\s]+$', '', company)
                 else:
@@ -256,6 +353,8 @@ class SellerWorker:
             company = self._clean_company_name(company)
 
             return html.unescape(company)
+            # Функция html.unescape() из стандартного модуля html в Python преобразует HTML-сущности в обычные символы
+            #  (например, &amp; преобразуется в &)
 
 
     def _clean_company_name(self, company: str) -> str:
@@ -265,9 +364,16 @@ class SellerWorker:
 
         # Убираем лишние пробелы
         company = re.sub(r'\s+', ' ', company).strip()
+        # В итоге этот код приводит строку к аккуратному виду, где:
+        # Между словами всегда ровно один пробел.
+        # Нет лишних пробелов или других пробельных символов в начале и конце строки
 
         # Исправляем дублирование ООО (например "ООО ООО "РОБОТКОМП КОРП"" -> "ООО "РОБОТКОМП КОРП"")
         company = re.sub(r'^(ООО|ИП|АО|ЗАО|ПАО)\s+(ООО|ИП|АО|ЗАО|ПАО)\s+', r'\1', company)
+        # В строке замены r'\1' используется ссылка на первую захваченную группу — то есть первая из
+        # этих аббревиатур (например, первая "ООО").
+        # Таким образом, весь второй юридический статус в заданной последовательности удаляется вместе с пробелами
+        # после него, а в строке остаётся только первая юридическая форма
 
         # Убираем возможные разделители в конце
         company = re.sub(r'[,\s]+$', '', company)
@@ -275,6 +381,45 @@ class SellerWorker:
         return company
 
 
+    def _extract_cell_list_data(self, cell_list_data: str) -> Dict[str, str]:
+        result = {
+            "orders": "",
+            "working_time": "",
+            "rating": "",
+            "review": ""
+        }
+
+        try:
+            data = json.loads(cell_list_data)
+            if "cells" in data and isinstance(data["cells"], list):
+                for cell in data["cells"]:
+                    if "dsCell" not in cell:
+                        continue
+
+                    ds_cell = cell["dsCell"]
+                    if "centerBlock" not in ds_cell or "rightBlock" not in ds_cell:
+                        continue
+
+                    title = ""
+                    if "title" in ds_cell["centerBlock"] and "text" in ds_cell["centerBlock"]["title"]:
+                        title = ds_cell["centerBlock"]["title"]["text"].lower()
+
+                    value = ""
+                    if "badge" in ds_cell["rightBlock"] and "text" in ds_cell["rightBlock"]["badge"]:
+                        value = ds_cell["rightBlock"]["badge"]["text"]
+
+                    if "заказов" in title:
+                        result["orders"] = value
+                    elif "работает с ozon" in title:
+                        result["working_time"] = value
+                    elif "средняя оценка" in title:
+                        result["rating"] = value
+                    elif "количество отзывов" in title:
+                        result["reviews"] = value
+
+            return result
+        except Exception:
+            return result
 
 
 
