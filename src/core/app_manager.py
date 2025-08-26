@@ -199,11 +199,99 @@ class AppManager:
         # Обновляем глобальные результаты для совместимости
         self.last_results = user_results
 
+        self._save_results_to_file(user_id)
+        self._export_to_excel(user_id)
+        self._send_report_to_telegram(user_id)
 
 
+    def _save_results_to_file(self, user_id: str = None):
+        try:
+            import json
+            from datetime import datetime
+            from pathlib import Path
 
+            folder_name = self.last_results.get('output_folder', 'unknown')
+            filename = f"category_{folder_name}.json"
+            current_timestamp = datetime.now().strftime("%d.%m.%Y_%H-%M-%S")
 
+            output_dir = self.settings.OUTPUT_DIR / folder_name
+            filepath = output_dir / filename
 
+            # Получаем результаты для конкретного пользователя
+            results = self.user_results.get(user_id, self.last_results) if user_id else self.last_results
 
+            save_data = {
+                'timestamp': current_timestamp,
+                'category_url': results.get('category_url', ''),
+                'total_products': results.get('total_products', 0),
+                'successful_products': results.get('successful_products', 0),
+                'total_sellers': results.get('total_sellers', 0),
+                'successful_sellers': results.get('successful_sellers', 0),
+                'products': []
+            }
+
+            for product in results.get('products', []):
+                product_url = ""
+                for url in results.get('links', {}).keys():
+                    if product.article in url:
+                        product_url = url
+                        break
+
+                seller_info = results.get('seller_data', {}).get(product.seller_id, None)
+
+                seller_data = {
+                    'name': product.company_name,
+                    'id': product.seller_id,
+                    'link': product.seller_link,
+                    'inn': '',
+                    'company_name': ''
+                }
+
+                if seller_info:
+                    company_name = seller_info.company_name.replace('\\"', '"').replace('\"', '"').replace('"', '"')
+
+                    # .replace('\\"', '"') — заменяет последовательность из обратного слеша и двойной кавычки \" на просто двойную кавычку ".
+                    # Обычно \" — это экранированная двойная кавычка в строках. Такая замена может использоваться,
+                    # чтобы убрать лишнее экранирование.
+                    # .replace('\"', '"') — заменяет (в данном коде эквивалент) повторяющуюся попытку заменить экранированную
+                    # кавычку, но в Python в строковых литералах \" и " в пределах одинарных кавычек — одно и то же.
+                    # replace('"', '"'), эта строка скорее избыточна или предусмотрена для ситуации, где
+                    # экранированная кавычка передана иначе
+
+                    seller_data.update({
+                        'inn': seller_info.inn,
+                        'company_name': company_name,
+                        'orders_count': seller_info.orders_count,
+                        'reviews_count': seller_info.reviews_count,
+                        'working_time': seller_info.working_time,
+                        'average_rating': seller_info.average_rating
+                    })
+                    # update - обновляет текущий словарь новыми или изменёнными парами ключ-значение
+
+                if "name" in seller_data:
+                    seller_data["name"] = seller_data['name'].replace('\\"', '"').replace('\"', '"').replace('"', '"')
+
+                save_data['products'].append({
+                    'article': product.article,
+                    'name': product.name,
+                    'seller': seller_data,
+                    'image_url': product.image_url,
+                    'card_price': product.card_price,
+                    'price': product.price,
+                    'original_price': product.original_price,
+                    'product_url': product_url,
+                    'success': product.success,
+                    'error': product.error
+                })
+
+            with open(filepath, 'w', encoding="utf-8") as f:
+                json.dump(save_data, f, ensure_ascii=False, indent=2)
+
+        except Exception as e:
+            logger.error(f"Ошибка сохранения результатов: {e}")
+
+    def _export_to_excel(self, user_id: str = None):
+        try:
+            # Получаем результаты для конкретного пользователя
 
 
