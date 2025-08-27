@@ -8,6 +8,7 @@ from ..parsers.product_parser import OzonProductParser
 from ..parsers.link_parser import OzonLinkParser
 from ..parsers.seller_parser import OzonSellerParser
 from ..telegram.bot_manager import TelegramBotManager
+from ..utils.excel_exporter import ExcelExporter
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ class AppManager:
         self.telegram_bot: Optional[TelegramBotManager] = None
         # : Optional[TelegramBotManager] — это аннотация типа. Она указывает, что переменная telegram_bot
         # может содержать либо объект типа TelegramBotManager, либо значение None
+
 
     def start_parsing(self, category_url: str, selected_fields: list = None, user_id: str = None) -> bool:
         with self.parsing_lock:
@@ -290,8 +292,22 @@ class AppManager:
         except Exception as e:
             logger.error(f"Ошибка сохранения результатов: {e}")
 
+
     def _export_to_excel(self, user_id: str = None):
         try:
             # Получаем результаты для конкретного пользователя
+            results = self.user_results.get(user_id, self.last_results) if user_id else self.last_results
+
+            folder_name = results.get('output_folder', 'unknown')
+            output_dir = self.settings.OUTPUT_DIR / folder_name
+
+            exporter = ExcelExporter(output_dir, f"category_{folder_name}")
+            selected_fields = results.get('selected_fields', [])
+
+            export_data = {'products': []}
+
+            for product in results.get('products', []):
+                product_url = ""
+
 
 
