@@ -108,6 +108,27 @@ class ExcelExporter:
             # Высота строк
             for row in range(1, len(data.get('products', [])) + 2):
                 ws.row_dimensions[row].height = 20
+                # установка высоты строки с номером row равной 20 единиц
+
+            # Фильтр и заморозка
+            if data.get('products'):
+                ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(data['products']) + 1}"
+                # ws.auto_filter.ref - задаёт область, к которой будет применён автофильтр
+                # len(data['products']) — количество товаров (строк с данными), +1 — для учёта первой строки с заголовками
+
+            ws.freeze_panes = "A2"
+            # Устанавливает заморозку панелей листа Excel так, что всё выше и левее ячейки "A2" остаётся неподвижным
+            # при прокрутке.
+            # Это означает, что первая строка (обычно с заголовками колонок) будет всегда видна при прокрутке вниз,
+            # что улучшает удобство чтения больших таблиц
+
+            wb.save(self.filepath)
+            logger.info(f"Excel файл сохранен: {self.filepath}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Ошибка экспорта в Excel: {e}")
+            return False
 
 
 

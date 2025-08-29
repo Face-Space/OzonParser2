@@ -308,6 +308,61 @@ class AppManager:
 
             for product in results.get('products', []):
                 product_url = ""
+                for url in results.get('links', {}).keys():
+                    if product.article in url:
+                        product_url = url
+                        break
+
+                seller_info = results.get('seller_data', {}).get(product.seller_id, None)
+
+                seller_data = {
+                    'name': product.company_name,
+                    'inn': '',
+                    'company_name': '',
+                    'orders_count': '',
+                    'reviews_count': '',
+                    'average_rating': '',
+                    'working_time': ''
+                }
+
+                if seller_info:
+                    seller_data.update({
+                        'inn': seller_info.inn,
+                        'company_name': seller_info.company_name.replace('\"', '"').replace('"', '"'),
+                        'orders_count': seller_info.orders_count,
+                        'reviews_count': seller_info.reviews_count,
+                        'average_rating': seller_info.average_rating,
+                        'working_time': seller_info.working_time
+                    })
+
+                export_data['products'].append({
+                    'article': product.article,
+                    'name': product.name,
+                    'seller': seller_data,
+                    'image_url': product.image_url,
+                    'card_price': product.card_price,
+                    'price': product.price,
+                    'original_price': product.original_price,
+                    'product_url': product_url,
+                    'success': product.success,
+                    'error': product.error
+                })
+
+                if exporter.export_results(export_data, selected_fields):
+                    self._send_files_to_telegram(str(exporter.filepath))
+
+        except Exception as e:
+            logger.error(f"Ошибка экспорта в Excel: {e}")
+
+
+    def _send_files_to_telegram(self, excel_path: str, user_id: str = None):
+        self._send_via_temp_bot(excel_path=excel_path, target_user_id=user_id)
+
+    def _send_via_temp_bot(self, excel_path: str = None, report_only: bool = False, target_user_id: str = None):
+        try:
+            from ..utils.config_loader import load_telegram_config
+
+
 
 
 
