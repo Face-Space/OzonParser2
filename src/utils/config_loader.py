@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 import sys
-from typing import Dict, Any
+from typing import Dict, Any, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +75,28 @@ def write_config(new_config: Dict[str, Any]) -> bool:
         logger.error(f"Ошибка записи в config.txt: {e}")
         return False
 
+def load_telegram_config() -> Tuple[Optional[str], Optional[str]]:
+    # Optional[str] означает, что каждый из этих элементов может быть либо строкой (str),
+    # либо None (т.е. отсутствует значение)
+    """Загружает TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID из config.txt"""
+    config = read_config()
 
+    bot_token = config.get("TELEGRAM_BOT_TOKEN")
+    chat_id = config.get("TELEGRAM_CHAT_ID")
 
+    return bot_token, chat_id
 
+def load_telegram_config_multi() -> Tuple[Optional[str], list]:
+    """Загружает TELEGRAM_BOT_TOKEN и список TELEGRAM_CHAT_ID из config.txt"""
+    config = read_config()
 
+    bot_token = config.get("TELEGRAM_BOT_TOKEN")
+    chat_ids_str = config.get("TELEGRAM_CHAT_ID", "")
 
+    # Парсим список User ID
+    chat_ids = []
+    if chat_ids_str:
+        chat_ids = [uid.strip() for uid in chat_ids_str.split(',') if uid.strip()]
 
-
-
+    return bot_token, chat_ids
 

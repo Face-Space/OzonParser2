@@ -358,9 +358,68 @@ class AppManager:
     def _send_files_to_telegram(self, excel_path: str, user_id: str = None):
         self._send_via_temp_bot(excel_path=excel_path, target_user_id=user_id)
 
+
     def _send_via_temp_bot(self, excel_path: str = None, report_only: bool = False, target_user_id: str = None):
         try:
             from ..utils.config_loader import load_telegram_config
+
+            bot_token, config_user_ids = load_telegram_config()
+
+            if not bot_token:
+                logger.error("Нет TELEGRAM_BOT_TOKEN в config.txt")
+                return
+
+            # Определяем целевого пользователя
+            if target_user_id:
+                # Отправляем конкретному пользователю
+                target_users = [target_user_id]
+            else:
+                # Отправляем всем пользователям из конфига (для обратной совместимости)
+                if not config_user_ids:
+                    logger.error("Нет TELEGRAM_CHAT_ID в config.txt")
+                    return
+                target_users = config_user_ids.split(',') if isinstance(config_user_ids, str) else [config_user_ids]
+
+            from aiogram import Bot
+            from aiogram.types import FSInputFile
+
+            async def send_files():
+                temp_bot = Bot(token=bot_token)
+
+                try:
+                    for target_user in target_users:
+                        target_user = target_user.strip()
+
+                        if report_only:
+                            # Получаем результаты для конкретного пользователя
+                            results = self.user_results.get(target_user_id, self.last_results) if target_user_id else self.last_results
+
+                            stats = results.get('parsing_stats', {})
+                            total_time = stats.get('total_time', 0)
+                            successful = stats.get('successful_products', 0)
+                            failed = stats.get('failed_products', 0)
+                            avg_time = stats.get('average_time_per_product', 0)
+
+                            hours = int(total_time // 3600)
+                            # 3600 секунд = 1 час (60 секунд * 60 минут).
+                            # // — оператор целочисленного деления (без остатка).
+                            # Выражение total_time // 3600 вычисляет, сколько целых часов содержится в total_time
+
+                            minutes = int((total_time % 3600) // 60)
+                            # total_time % 3600 — оператор остатка от деления, вычисляет оставшиеся секунды
+                            # после вычета полных часов.
+                            # Затем (оставшиеся секунды) // 60 — делим эти оставшиеся секунды на 60, чтобы получить,
+                            # сколько полных минут в остатке
+
+                            seconds = int(total_time % 60)
+                            # total_time % 60 — остаток от деления total_time на 60, то есть сколько секунд осталось
+                            # после вычета полных минут
+
+
+
+
+
+
 
 
 
