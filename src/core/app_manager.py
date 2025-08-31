@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+import asyncio
 from typing import Optional
 
 from ..config.settings import Settings
@@ -9,7 +10,7 @@ from ..parsers.link_parser import OzonLinkParser
 from ..parsers.seller_parser import OzonSellerParser
 from ..telegram.bot_manager import TelegramBotManager
 from ..utils.excel_exporter import ExcelExporter
-
+from ..utils.resource_manager import resource_manager
 
 logger = logging.getLogger(__name__)
 # __name__ — это встроенная переменная в Python, которая содержит
@@ -354,6 +355,62 @@ class AppManager:
         except Exception as e:
             logger.error(f"Ошибка экспорта в Excel: {e}")
 
+    def start_telegram_bot(self, bot_token: str, user_ids) -> bool:
+        try:
+            if self.telegram_bot:
+                self.telegram_bot.stop()
+
+            # Поддерживаем как строку так и массив для обратной совместимости
+            if isinstance(user_ids, str):
+                user_ids = [user_ids]
+            elif not isinstance(user_ids, list):
+                user_ids = list(user_ids)
+
+            self.telegram_bot = TelegramBotManager(bot_token, user_ids, self)
+            return self.telegram_bot.start()
+
+        except Exception as e:
+            logger.error(f"Ошибка запуска Telegram бота: {e}")
+            return False
+
+
+    def restart_parsing(self, category_url: str, selected_fields: list = None, user_id: str = None) -> bool:
+        self.stop_parsing(user_id)
+        time.sleep(1)
+        return self.start_parsing(category_url, selected_fields, user_id)
+
+
+    def get_status(self):
+        with self.parsing_lock:
+            status = {
+                'is_running': self.is_running,
+                'active_users_count': len(self.active_parsing_users),
+                'active_users': list(self.active_parsing_users),
+                'telegram_bot_active': self.telegram_bot and hasattr(self.telegram_bot,
+                                                                     'is_running') and self.telegram_bot.is_running,
+                'last_results': self.last_results,
+                'settings': {
+                    'max_products': self.settings.MAX_PRODUCTS,
+                    'max_workers': self.settings.MAX_WORKERS
+                }
+            }
+
+        # Добавляем информацию о ресурсах
+        resource_status = resource_manager.get_status()
+        status.update(resource_status)
+
+        return status
+
+    #################### Закончил здесь
+
+    def stop_telegram_bot(self):
+        if self.telegram_bot:
+            self.telegram_bot.stop()
+            self.telegram_bot = None
+
+    def _send_report_to_telegram(self, user_id: str = None):
+        self._send_via_temp_bot(report_only=True, target_user_id=user_id)
+
 
     def _send_files_to_telegram(self, excel_path: str, user_id: str = None):
         self._send_via_temp_bot(excel_path=excel_path, target_user_id=user_id)
@@ -415,13 +472,99 @@ class AppManager:
                             # total_time % 60 — остаток от деления total_time на 60, то есть сколько секунд осталось
                             # после вычета полных минут
 
+                            if hours > 0:
+                                time_str = f"{hours}ч {minutes}м {seconds}с"
+                            elif minutes > 0:
+                                time_str = f"{minutes}м {seconds}с"
+                            else:
+                                time_str = f"{seconds}с"
+
+                            success_rate = (successful / (successful + failed) * 100)
+
+                            report = (
+                                "📈 <b>Отчет о парсинге</b>\n\n"
+                                f"⏱️ <b>Общее время:</b> {time_str}\n"
+                                f"⚡ <b>Среднее время на товар:</b> {avg_time:.1f}с\n\n"
+                                f"📦 <b>Всего товаров:</b> {successful + failed}\n"
+                                f"✅ <b>Успешно:</b> {successful}\n"
+                                f"❌ <b>Неудачно:</b> {failed}\n"
+                                f"📊 <b>Успешность:</b> {success_rate:.1f}%"
+                            )
+
+                            await temp_bot.send_message(chat_id=target_user, text=report, parse_mode="HTML")
+
+                        if excel_path:
+                            caption = (
+                                "🎉 <b>Парсинг успешно завершен!</b>\n\n"
+                                "📊 <b>Ваш Excel файл готов!</b>\n"
+                                "💎 Данные отформатированы и готовы к использованию\n\n"
+                                "📥 Скачайте файл ниже ⬇️"
+                            )
+
+                            document = FSInputFile(excel_path)
+                            # FSInputFile — это удобный способ обернуть локальный файл для его дальнейшей отправки через
+                            # aiogram-бота в Telegram, поддерживающий асинхронное чтение файла и необходимые параметры загрузки
+
+                            await temp_bot.send_document(
+                                chat_id=target_user,
+                                document=document,
+                                caption=caption,
+                                parse_mode="HTML"
+                            )
+
+                    if excel_path:
+                        await asyncio.sleep(10)
+                        self._delete_output_folder()
+
+                finally:
+                    await temp_bot.session.close()
+
+            asyncio.run(send_files())
+
+        except Exception as e:
+            logger.error(f"Ошибка отправки через временный бот: {e}")
 
 
+    def _delete_output_folder(self):
+        try:
+            import shutil
+            import os
+            import stat
+
+            folder_name = self.last_results.get('output_folder', '')
+            if folder_name:
+                output_dir = self.settings.OUTPUT_DIR / folder_name
+                if output_dir.exists():
+                    def handle_remove_readonly(func, path, exc):
+                        os.chmod(path, stat.S_IWRITE)
+                        # os.chmod(path, stat.S_IWRITE) — меняет права доступа к файлу или папке по пути path, делая его
+                        # доступным для записи (S_IWRITE — бит разрешения на запись).
+
+                        func(path)
+                        # func(path) — повторно вызывает исходную функцию (обычно удаление) для этого пути уже после
+                        # изменения прав доступа.
+
+                    shutil.rmtree(output_dir, onerror=handle_remove_readonly)
+                    # shutil.rmtree рекурсивно удаляет каталог output_dir и все его содержимое.
+                    # Параметр onerror задает функцию-обработчик ошибок. В случае ошибки удаления
+                    # (например, из-за readonly-файла), будет вызвана handle_remove_readonly.
+                    # Таким образом, если какой-то файл или папка защищены от записи и rmtree не может их удалить,
+                    # handle_remove_readonly изменит права доступа на запись и повторит удаление.
+
+                    # Когда возникает ошибка (например, из-за readonly-файла), внутренняя реализация shutil.rmtree
+                    # автоматически вызывает функцию, переданную в onerror, передавая ей три аргумента: func (функцию
+                    # удаления, вызвавшую ошибку), путь к файлу и информацию об исключении.
+                    # То есть handle_remove_readonly вызывается автоматически внутри shutil.rmtree с нужными аргументами,
+                    # а в коде она просто указывается по имени без вызова и скобок
+
+        except Exception as e:
+            logger.error(f"Ошибка удаления папки: {e}")
+
+    def shutdown(self):
+        # non-blocking wrapper
+        threading.Thread(target=self._do_shutdown, daemon=True).start()
 
 
-
-
-
-
-
-
+    def _do_shutdown(self):
+        self.stop_parsing()
+        self.stop_telegram_bot()
