@@ -355,6 +355,7 @@ class AppManager:
         except Exception as e:
             logger.error(f"Ошибка экспорта в Excel: {e}")
 
+
     def start_telegram_bot(self, bot_token: str, user_ids) -> bool:
         try:
             if self.telegram_bot:
@@ -367,11 +368,20 @@ class AppManager:
                 user_ids = list(user_ids)
 
             self.telegram_bot = TelegramBotManager(bot_token, user_ids, self)
+            # В данном случае self передается, чтобы TelegramBotManager имел доступ к текущему объекту
+            # Это часто используется, если TelegramBotManager должен иметь доступ к методам или состоянию
+            # родительского объекта, с которым он связан
             return self.telegram_bot.start()
 
         except Exception as e:
             logger.error(f"Ошибка запуска Telegram бота: {e}")
             return False
+
+
+    def stop_telegram_bot(self):
+        if self.telegram_bot:
+            self.telegram_bot.stop()
+            self.telegram_bot = None
 
 
     def restart_parsing(self, category_url: str, selected_fields: list = None, user_id: str = None) -> bool:
@@ -401,12 +411,12 @@ class AppManager:
 
         return status
 
-    #################### Закончил здесь
 
-    def stop_telegram_bot(self):
-        if self.telegram_bot:
-            self.telegram_bot.stop()
-            self.telegram_bot = None
+    def get_user_results(self, user_id: str):
+        """Получает результаты парсинга для конкретного пользователя"""
+        with self.parsing_lock:
+            return self.user_results.get(user_id, None)
+
 
     def _send_report_to_telegram(self, user_id: str = None):
         self._send_via_temp_bot(report_only=True, target_user_id=user_id)
@@ -559,6 +569,7 @@ class AppManager:
 
         except Exception as e:
             logger.error(f"Ошибка удаления папки: {e}")
+
 
     def shutdown(self):
         # non-blocking wrapper
