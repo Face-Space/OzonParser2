@@ -404,6 +404,9 @@ class AppManager:
                     'max_workers': self.settings.MAX_WORKERS
                 }
             }
+            #  hasattr() в Python проверяет наличие указанного именованного атрибута у объекта. Он принимает два
+            #  параметра: сам объект и имя атрибута в виде строки. Если объект имеет атрибут с таким именем, метод
+            #  возвращает True, иначе — False
 
         # Добавляем информацию о ресурсах
         resource_status = resource_manager.get_status()
