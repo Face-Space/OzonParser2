@@ -21,7 +21,6 @@ from src.gui.main_window import MainWindow
 from src.utils.logger import setup_logging
 from src.config.settings import Settings
 
-# повтори logger.py через 2 дня
 
 def main():
     # Запуск GUI для управления телеграмм ботом
