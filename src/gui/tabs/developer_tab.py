@@ -49,18 +49,18 @@ class DeveloperTab:
         # Telegram
         ttk.Label(contact_frame, text="Telegram:",
                   font=('Arial', 12, 'bold')).pack(anchor=tk.W, pady=(0, 5))
-        telegram_link = ttk.Label(contact_frame, text="@NurjahonErgashevMe",
+        telegram_link = ttk.Label(contact_frame, text="",
                                   style="Link.TLabel", cursor="hand2")
         telegram_link.pack(anchor=tk.W, padx=20, pady=(0, 15))
-        telegram_link.bind("<Button-1>", lambda e: self._open_link("https://t.me/NurjahonErgashevMe"))
+        telegram_link.bind("<Button-1>", lambda e: self._open_link(""))
 
         # Kwork
         ttk.Label(contact_frame, text="Kwork:",
                   font=('Arial', 12, 'bold')).pack(anchor=tk.W, pady=(0, 5))
-        kwork_link = ttk.Label(contact_frame, text="https://kwork.ru/user/nurjahonergashevme",
+        kwork_link = ttk.Label(contact_frame, text="",
                                style="Link.TLabel", cursor="hand2")
         kwork_link.pack(anchor=tk.W, padx=20, pady=(0, 15))
-        kwork_link.bind("<Button-1>", lambda e: self._open_link("https://kwork.ru/user/nurjahonergashevme"))
+        kwork_link.bind("<Button-1>", lambda e: self._open_link(""))
 
         # Возможности приложения
         features_frame = ttk.LabelFrame(self.frame, text="⚡ Возможности", padding=20)
